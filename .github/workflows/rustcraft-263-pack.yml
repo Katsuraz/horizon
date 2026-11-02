@@ -1,0 +1,77 @@
+name: RustCraft 26.3 Fabric modpack test
+
+on:
+  push:
+    branches:
+      - rustcraft/fabric-compat-analyzer
+    paths:
+      - tools/rustcraft_263_pack_test.py
+      - tests/test_rustcraft_263_pack_test.py
+      - .github/workflows/rustcraft-263-pack.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-real-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test parser and sample selection
+        run: |
+          python -m unittest discover -s tests -p 'test_rustcraft_263_pack_test.py' -v
+          python -m unittest discover -s tests -p 'test_rustcraft_port_candidate.py' -v
+
+      - name: Inspect official Ultimate Vanilla+ 26.3.5 Modrinth manifest
+        run: |
+          python tools/rustcraft_263_pack_test.py \
+            --project uvplus --version 26.3.5 \
+            --output artifacts/rustcraft-263-manifest.json
+
+      - name: Install Rust compiler
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rustcraft-263-modpack
+
+      - name: Compile existing Horizon content porter
+        run: cargo build --locked -p horizon-port-pack
+
+      - name: Verify and inspect four representative real mod JARs
+        run: |
+          python tools/rustcraft_263_pack_test.py \
+            --project uvplus --version 26.3.5 \
+            --porter target/debug/horizon-port-pack \
+            --output artifacts/rustcraft-263-report.json
+
+      - name: Add readable run summary
+        if: always()
+        run: |
+          if [ -f artifacts/rustcraft-263-report.md ]; then
+            cat artifacts/rustcraft-263-report.md >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f artifacts/rustcraft-263-manifest.md ]; then
+            cat artifacts/rustcraft-263-manifest.md >> "$GITHUB_STEP_SUMMARY"
+            echo 'The Rust porter stage did not finish; see the logs.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No modpack report was produced; see the failed step logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload JSON/Markdown reports only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustCraft-Ultimate-Vanilla-26.3-Compatibility
+          path: |
+            artifacts/rustcraft-263-*.json
+            artifacts/rustcraft-263-*.md
+          if-no-files-found: warn
