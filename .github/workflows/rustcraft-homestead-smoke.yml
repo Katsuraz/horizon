@@ -1,0 +1,58 @@
+name: RustCraft Homestead 2.0.1 preflight
+
+on:
+  push:
+    branches:
+      - rustcraft/fabric-compat-analyzer
+    paths:
+      - tools/rustcraft_pack_smoke.py
+      - tests/test_rustcraft_pack_smoke.py
+      - .github/workflows/rustcraft-homestead-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-inspection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout RustCraft branch
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test manifest inspector
+        run: python -m unittest discover -s tests -p 'test_rustcraft_pack_smoke.py' -v
+      - name: Inspect public Homestead 2.0.1 Modrinth pack
+        run: |
+          python tools/rustcraft_pack_smoke.py \
+            --modrinth-project homestead --version 2.0.1 \
+            --output artifacts/homestead-2.0.1-manifest.json
+      - name: Show compatibility summary
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r = json.loads(Path('artifacts/homestead-2.0.1-manifest.json').read_text())
+          lines = [
+              '## RustCraft Homestead modpack manifest test',
+              f"- Pack: {r['pack_name']} ({r['pack_version']})",
+              f"- Minecraft: {r['minecraft']}; Horizon target: {r['target_horizon_minecraft']}",
+              f"- Mod JAR references: {r['mod_jar_refs']}",
+              f"- Manifest file count: {r['manifest_file_count']}",
+              f"- Version match: {'yes' if r['minecraft_version_matches'] else 'NO'}",
+              '- **No Java mods executed and no Minecraft gameplay tested.**',
+              '- This report does not establish that Homestead is playable in Horizon.',
+          ]
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write('\n'.join(lines) + '\n')
+          PY
+      - name: Upload report (manifest metadata only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustCraft-Homestead-2.0.1-Manifest-Report
+          path: artifacts/homestead-2.0.1-manifest.json
+          if-no-files-found: error
