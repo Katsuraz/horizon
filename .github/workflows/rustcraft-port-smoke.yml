@@ -1,0 +1,130 @@
+name: RustCraft Homestead real JAR port checks
+
+on:
+  push:
+    branches:
+      - rustcraft/fabric-compat-analyzer
+    paths:
+      - .github/workflows/rustcraft-port-smoke.yml
+      - tools/rustcraft_port_candidate.py
+      - tests/test_rustcraft_port_candidate.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-two-mods:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run offline synthetic security and checksum tests
+        run: python -m unittest discover -s tests -p 'test_rustcraft_port_candidate.py' -v
+
+      - name: Download two Homestead 2.0.1 JARs and verify their hashes
+        run: |
+          python tools/rustcraft_port_candidate.py \
+            --project homestead --version 2.0.1 \
+            --jar 'mods/Incendium_1.20.x_v5.3.5.jar' \
+            --jar 'mods/eating-animation-1.20+1.9.61.jar' \
+            --output scratch/rustcraft-jars \
+            --report artifacts/download-metadata.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rustcraft-port-candidate
+
+      - name: Compile Horizon's existing horizon-port-pack tool
+        run: cargo build --locked -p horizon-port-pack
+
+      - name: Check Incendium content (no Java execution)
+        run: |
+          mkdir -p artifacts scratch/check-incendium
+          set +e
+          target/debug/horizon-port-pack \
+            check 'scratch/rustcraft-jars/00-Incendium_1.20.x_v5.3.5.jar' \
+            scratch/check-incendium > artifacts/incendium-tool.log 2>&1
+          result=$?
+          echo "$result" > artifacts/incendium-exit-code.txt
+          cat artifacts/incendium-tool.log
+          exit 0
+
+      - name: Check Eating Animation content (no Java execution)
+        run: |
+          mkdir -p artifacts scratch/check-eating-animation
+          set +e
+          target/debug/horizon-port-pack \
+            check 'scratch/rustcraft-jars/01-eating-animation-1.20+1.9.61.jar' \
+            scratch/check-eating-animation > artifacts/eating-animation-tool.log 2>&1
+          result=$?
+          echo "$result" > artifacts/eating-animation-exit-code.txt
+          cat artifacts/eating-animation-tool.log
+          exit 0
+
+      - name: Prepare clear report
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          out = Path("artifacts")
+          out.mkdir(exist_ok=True)
+          report = {
+              "pack": "Homestead 2.0.1",
+              "target": "Horizon (Minecraft Java 26.3)",
+              "scope": "Two selected mod JARs; no game launch or Java bytecode execution",
+              "checks": [],
+          }
+          for slug in ("incendium", "eating-animation"):
+              check_file = Path(f"scratch/check-{slug}/check.json")
+              exit_file = out / f"{slug}-exit-code.txt"
+              status = exit_file.read_text().strip() if exit_file.exists() else "not reached"
+              entry = {"mod": slug, "tool_exit_code": status, "result": None}
+              if check_file.exists():
+                  try:
+                      entry["result"] = json.loads(check_file.read_text())
+                      (out / f"{slug}-check.json").write_text(
+                          json.dumps(entry["result"], indent=2) + "\n"
+                      )
+                  except (ValueError, OSError) as err:
+                      entry["parse_error"] = str(err)
+              report["checks"].append(entry)
+          (out / "two-mod-report.json").write_text(json.dumps(report, indent=2) + "\n")
+          lines = [
+              "## RustCraft: Homestead 2.0.1 real mod content checks",
+              "",
+              "This reads two checksum-verified Java mod JARs with Horizon's port tool.",
+              "**It does not run Java code or launch Homestead.**",
+              "",
+          ]
+          for item in report["checks"]:
+              result = item["result"] or {}
+              lines.append(
+                  f"- **{item['mod']}** — porter exit: {item['tool_exit_code']}; "
+                  f"verdict: {result.get('verdict', 'unavailable')}; "
+                  f"summary: {result.get('summary', 'no check.json produced')}"
+              )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - name: Upload diagnostic results only (not mod JARs or copied assets)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustCraft-Homestead-Real-Mod-Checks
+          path: artifacts/
+          if-no-files-found: warn
